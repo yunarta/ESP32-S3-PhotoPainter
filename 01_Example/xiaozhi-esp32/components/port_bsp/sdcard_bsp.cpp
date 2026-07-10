@@ -39,7 +39,11 @@ SdName_(SdName)
 }
 
 CustomSDPort::~CustomSDPort() {
-
+    SDPort_ClearScanList();
+    if (ScanListHandle != NULL) {
+        list_destroy(ScanListHandle);
+        ScanListHandle = NULL;
+    }
 }
 
 int CustomSDPort::SDPort_WriteFile(const char *path, const void *data, size_t data_len) {
@@ -171,7 +175,25 @@ int CustomSDPort::SDPort_GetScanListValue(void) {
     return Quantity;
 }
 
+void CustomSDPort::SDPort_ClearScanList() {
+    if (ScanListHandle == NULL) {
+        return;
+    }
+
+    list_node_t *node = NULL;
+    while ((node = list_lpop(ScanListHandle)) != NULL) {
+        if (node->val != NULL) {
+            LIST_FREE(node->val);
+        }
+        LIST_FREE(node);
+    }
+    CurrentlyNode = NULL;
+    ImgValue = 0;
+}
+
 void CustomSDPort::SDPort_ScanListDir(const char *path) {
+    SDPort_ClearScanList();
+
     struct dirent *entry;
     DIR           *dir = opendir(path);
 

@@ -31,6 +31,7 @@ public:
     int SDPort_ReadOffset(const char *path, void *buffer, size_t len, size_t offset);
     int SDPort_WriteOffset(const char *path, const void *data, size_t len, bool append);
     sdmmc_card_t* SDPort_GetSdMMCHost();
+    void SDPort_ClearScanList();
     void SDPort_ScanListDir(const char *path);
     list_t* SDPort_GetListHost();
     int SDPort_GetSdcardInitOK();

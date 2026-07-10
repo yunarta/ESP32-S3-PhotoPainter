@@ -9,10 +9,92 @@
 #include "user_app.h"
 #include <driver/i2c_master.h>
 #include <esp_log.h>
+#include <dirent.h>
+#include <stdio.h>
+#include <string>
+#include <sys/stat.h>
 
 #include "mcp_server.h"
 
 #define TAG "esp-s3-PhotoPainter"
+
+static const char *USER_AI_IMG_ROOT = "/sdcard/05_user_ai_img";
+static std::string current_user_ai_img_dir = USER_AI_IMG_ROOT;
+
+static bool IsSafeRelativeFolder(const std::string &folder) {
+    if (folder.empty() || folder.size() > 48) {
+        return false;
+    }
+    if (folder.find("..") != std::string::npos || folder.find('/') != std::string::npos || folder.find('\\') != std::string::npos) {
+        return false;
+    }
+    return true;
+}
+
+static std::string ResolveUserAiImgPath(const std::string &folder) {
+    if (folder.empty() || folder == "." || folder == "root") {
+        return USER_AI_IMG_ROOT;
+    }
+    if (!IsSafeRelativeFolder(folder)) {
+        return "";
+    }
+    return std::string(USER_AI_IMG_ROOT) + "/" + folder;
+}
+
+static bool DirectoryExists(const std::string &path) {
+    struct stat st = {};
+    return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+static bool FileExists(const std::string &path) {
+    struct stat st = {};
+    return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+
+static std::string ReadTextFile(const std::string &path, size_t max_len) {
+    FILE *file = fopen(path.c_str(), "rb");
+    if (file == NULL) {
+        return "";
+    }
+
+    std::string content;
+    content.resize(max_len);
+    size_t read_len = fread(&content[0], 1, max_len, file);
+    fclose(file);
+    content.resize(read_len);
+    return content;
+}
+
+static bool WriteTextFile(const std::string &path, const std::string &content) {
+    FILE *file = fopen(path.c_str(), "wb");
+    if (file == NULL) {
+        return false;
+    }
+    size_t written = fwrite(content.data(), 1, content.size(), file);
+    fclose(file);
+    return written == content.size();
+}
+
+static std::string ListUserAiImgFolders() {
+    DIR *dir = opendir(USER_AI_IMG_ROOT);
+    if (dir == NULL) {
+        return "Failed to open /sdcard/05_user_ai_img";
+    }
+
+    std::string result = "root";
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_type != DT_DIR || entry->d_name[0] == '.') {
+            continue;
+        }
+        std::string folder = entry->d_name;
+        if (IsSafeRelativeFolder(folder)) {
+            result += "\n" + folder;
+        }
+    }
+    closedir(dir);
+    return result;
+}
 
 class waveshare_PhotoPainter : public WifiBoard {
   private:
@@ -84,6 +166,80 @@ class waveshare_PhotoPainter : public WifiBoard {
             ESP_LOGE("h timer", "%d", value);
             img_loopTimer = value * 3600 * 1000;
             return true;
+        });
+
+
+
+        mcp_server.AddTool("self.disp.listImageFolders", "列出 /sdcard/05_user_ai_img 下可切换的图片文件夹。返回 root 代表 05_user_ai_img 根目录。", PropertyList(), [this](const PropertyList &) -> ReturnValue {
+            return ListUserAiImgFolders();
+        });
+
+        mcp_server.AddTool("self.disp.listImages", "读取当前或指定用户图片文件夹里的图片清单，返回可传给 SwitchPictures 的序号和路径。folder 可填 root 或 05_user_ai_img 下的一级子文件夹名。", PropertyList({Property("folder", kPropertyTypeString, std::string(""))}), [this](const PropertyList &properties) -> ReturnValue {
+            std::string folder = properties["folder"].value<std::string>();
+            std::string path = folder.empty() ? current_user_ai_img_dir : ResolveUserAiImgPath(folder);
+            if (path.empty() || !DirectoryExists(path)) {
+                return std::string("invalid folder: ") + folder;
+            }
+
+            SDPort->SDPort_ScanListDir(path.c_str());
+            sdcard_bmp_Quantity = SDPort->SDPort_GetScanListValue();
+            img_loopCount = sdcard_bmp_Quantity;
+            current_user_ai_img_dir = path;
+
+            std::string result = "folder=" + path + ", images=" + std::to_string(sdcard_bmp_Quantity);
+            list_t *list = SDPort->SDPort_GetListHost();
+            list_iterator_t *it = list_iterator_new(list, LIST_HEAD);
+            list_node_t *node = NULL;
+            int index = 1;
+            while ((node = list_iterator_next(it)) != NULL) {
+                CustomSDPortNode_t *image = (CustomSDPortNode_t *) node->val;
+                result += "\n" + std::to_string(index++) + ": " + image->sdcard_name;
+            }
+            list_iterator_destroy(it);
+            return result;
+        });
+
+        mcp_server.AddTool("self.disp.setImageFolder", "切换要浏览和显示的用户图片文件夹。folder 填 root 或 05_user_ai_img 下的一级子文件夹名；切换后可用 SwitchPictures 显示指定序号。", PropertyList({Property("folder", kPropertyTypeString, std::string("root"))}), [this](const PropertyList &properties) -> ReturnValue {
+            std::string folder = properties["folder"].value<std::string>();
+            std::string path = ResolveUserAiImgPath(folder);
+            if (path.empty() || !DirectoryExists(path)) {
+                return std::string("invalid folder: ") + folder;
+            }
+
+            SDPort->SDPort_ScanListDir(path.c_str());
+            sdcard_bmp_Quantity = SDPort->SDPort_GetScanListValue();
+            img_loopCount = sdcard_bmp_Quantity;
+            current_user_ai_img_dir = path;
+            return std::string("folder=") + path + ", images=" + std::to_string(sdcard_bmp_Quantity);
+        });
+
+        mcp_server.AddTool("self.disp.readFolderMeta", "读取当前或指定用户图片文件夹里的 META.md，用来理解这个文件夹图片内容。folder 可填 root 或 05_user_ai_img 下的一级子文件夹名。", PropertyList({Property("folder", kPropertyTypeString, std::string(""))}), [this](const PropertyList &properties) -> ReturnValue {
+            std::string folder = properties["folder"].value<std::string>();
+            std::string path = folder.empty() ? current_user_ai_img_dir : ResolveUserAiImgPath(folder);
+            if (path.empty() || !DirectoryExists(path)) {
+                return std::string("invalid folder: ") + folder;
+            }
+
+            std::string meta_path = path + "/META.md";
+            if (!FileExists(meta_path)) {
+                return std::string("META.md not found in ") + path;
+            }
+            return ReadTextFile(meta_path, 4096);
+        });
+
+        mcp_server.AddTool("self.disp.writeFolderMeta", "写入当前或指定用户图片文件夹里的 META.md。folder 可填 root 或 05_user_ai_img 下的一级子文件夹名；content 是要保存的 Markdown 内容。", PropertyList({Property("folder", kPropertyTypeString, std::string("")), Property("content", kPropertyTypeString)}), [this](const PropertyList &properties) -> ReturnValue {
+            std::string folder = properties["folder"].value<std::string>();
+            std::string content = properties["content"].value<std::string>();
+            if (content.size() > 4096) {
+                return std::string("META.md content is too long; max 4096 bytes");
+            }
+
+            std::string path = folder.empty() ? current_user_ai_img_dir : ResolveUserAiImgPath(folder);
+            if (path.empty() || !DirectoryExists(path)) {
+                return std::string("invalid folder: ") + folder;
+            }
+
+            return WriteTextFile(path + "/META.md", content);
         });
 
         mcp_server.AddTool("self.disp.isSHTC3", "获取设备温度和湿度", PropertyList(), [this](const PropertyList &) -> ReturnValue {
