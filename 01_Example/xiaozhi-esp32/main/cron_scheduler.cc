@@ -143,6 +143,9 @@ bool CronScheduler::RemoveReminder(const std::string& id) {
     reminders_.erase(std::remove_if(reminders_.begin(), reminders_.end(), [&id](const Reminder& reminder) {
         return reminder.id == id;
     }), reminders_.end());
+    pending_reminders_.erase(std::remove_if(pending_reminders_.begin(), pending_reminders_.end(), [&id](const Reminder& reminder) {
+        return reminder.id == id;
+    }), pending_reminders_.end());
     bool removed = reminders_.size() != old_size;
     if (removed) {
         SaveLocked();
@@ -156,6 +159,11 @@ bool CronScheduler::SetReminderEnabled(const std::string& id, bool enabled) {
         if (reminder.id == id) {
             reminder.enabled = enabled;
             reminder.next_fire_at = CalculateNextFire(reminder, time(nullptr));
+            if (!enabled) {
+                pending_reminders_.erase(std::remove_if(pending_reminders_.begin(), pending_reminders_.end(), [&id](const Reminder& pending) {
+                    return pending.id == id;
+                }), pending_reminders_.end());
+            }
             SaveLocked();
             return true;
         }
@@ -166,6 +174,7 @@ bool CronScheduler::SetReminderEnabled(const std::string& id, bool enabled) {
 void CronScheduler::ClearReminders() {
     std::lock_guard<std::mutex> lock(mutex_);
     reminders_.clear();
+    pending_reminders_.clear();
     SaveLocked();
 }
 
@@ -206,6 +215,13 @@ int64_t CronScheduler::GetNextWakeupDelayUs() {
         return 1000000LL;
     }
     return static_cast<int64_t>(next_fire - now) * 1000000LL;
+}
+
+void CronScheduler::CompletePendingReminder(const std::string& id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    pending_reminders_.erase(std::remove_if(pending_reminders_.begin(), pending_reminders_.end(), [&id](const Reminder& reminder) {
+        return reminder.id == id;
+    }), pending_reminders_.end());
 }
 
 void CronScheduler::Load() {
@@ -261,7 +277,7 @@ void CronScheduler::SaveLocked() {
 }
 
 void CronScheduler::CheckDueReminders() {
-    std::vector<Reminder> due_reminders;
+    std::vector<Reminder> reminders_to_try;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!IsValidTime()) {
@@ -272,6 +288,7 @@ void CronScheduler::CheckDueReminders() {
         struct tm tm_value;
         localtime_r(&now, &tm_value);
         time_t current_minute = now - tm_value.tm_sec;
+        bool should_save = false;
 
         for (auto& reminder : reminders_) {
             if (!reminder.enabled) {
@@ -286,27 +303,35 @@ void CronScheduler::CheckDueReminders() {
                 reminder.last_fired_at != current_minute;
 
             if (due_now) {
-                due_reminders.push_back(reminder);
+                if (!HasPendingReminderLocked(reminder.id)) {
+                    pending_reminders_.push_back(reminder);
+                }
                 reminder.last_fired_at = current_minute;
+                should_save = true;
             }
 
             reminder.next_fire_at = CalculateNextFire(reminder, now);
         }
-        if (!due_reminders.empty()) {
+
+        if (!pending_reminders_.empty()) {
+            reminders_to_try.push_back(pending_reminders_.front());
+        }
+        if (should_save) {
             SaveLocked();
         }
     }
 
-    for (const auto& reminder : due_reminders) {
-        ESP_LOGI(TAG, "Reminder %s due: %02d:%02d", reminder.id.c_str(), reminder.hour, reminder.minute);
+    for (const auto& reminder : reminders_to_try) {
+        ESP_LOGI(TAG, "Trying pending reminder %s: %02d:%02d", reminder.id.c_str(), reminder.hour, reminder.minute);
         Application::GetInstance().Schedule([reminder]() {
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateIdle) {
                 auto prompt = BuildReminderPrompt(reminder, time(nullptr));
+                CronScheduler::GetInstance().CompletePendingReminder(reminder.id);
                 Board::GetInstance().GetDisplay()->SetChatMessage("system", prompt.c_str());
                 app.StartListening();
             } else {
-                ESP_LOGW(TAG, "Skip reminder %s because device is busy", reminder.id.c_str());
+                ESP_LOGW(TAG, "Defer reminder %s because device is busy", reminder.id.c_str());
             }
         });
     }
@@ -369,6 +394,12 @@ bool CronScheduler::MatchesDay(const std::string& days, int weekday) const {
 
     char numeric[2] = {static_cast<char>('0' + weekday), '\0'};
     return normalized.find(numeric) != std::string::npos;
+}
+
+bool CronScheduler::HasPendingReminderLocked(const std::string& id) const {
+    return std::find_if(pending_reminders_.begin(), pending_reminders_.end(), [&id](const Reminder& reminder) {
+        return reminder.id == id;
+    }) != pending_reminders_.end();
 }
 
 std::string CronScheduler::GenerateId() const {

@@ -35,6 +35,7 @@ public:
     void ClearReminders();
     cJSON* GetRemindersJson();
     int64_t GetNextWakeupDelayUs();
+    void CompletePendingReminder(const std::string& id);
 
 private:
     CronScheduler();
@@ -50,10 +51,12 @@ private:
     time_t CalculateNextFire(const Reminder& reminder, time_t now) const;
     bool IsValidTime() const;
     bool MatchesDay(const std::string& days, int weekday) const;
+    bool HasPendingReminderLocked(const std::string& id) const;
     std::string GenerateId() const;
 
     std::mutex mutex_;
     std::vector<Reminder> reminders_;
+    std::vector<Reminder> pending_reminders_;
     esp_timer_handle_t timer_handle_ = nullptr;
     bool started_ = false;
 };
