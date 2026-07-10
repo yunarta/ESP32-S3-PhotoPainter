@@ -75,6 +75,19 @@ static bool WriteTextFile(const std::string &path, const std::string &content) {
     return written == content.size();
 }
 
+static bool TakeSdAccessLock() {
+    if (epaper_gui_semapHandle == NULL) {
+        return true;
+    }
+    return xSemaphoreTake(epaper_gui_semapHandle, pdMS_TO_TICKS(5000)) == pdTRUE;
+}
+
+static void GiveSdAccessLock() {
+    if (epaper_gui_semapHandle != NULL) {
+        xSemaphoreGive(epaper_gui_semapHandle);
+    }
+}
+
 static std::string ListUserAiImgFolders() {
     DIR *dir = opendir(USER_AI_IMG_ROOT);
     if (dir == NULL) {
@@ -171,13 +184,22 @@ class waveshare_PhotoPainter : public WifiBoard {
 
 
         mcp_server.AddTool("self.disp.listImageFolders", "列出 /sdcard/05_user_ai_img 下可切换的图片文件夹。返回 root 代表 05_user_ai_img 根目录。", PropertyList(), [this](const PropertyList &) -> ReturnValue {
-            return ListUserAiImgFolders();
+            if (!TakeSdAccessLock()) {
+                return std::string("SD card is busy; try again");
+            }
+            std::string result = ListUserAiImgFolders();
+            GiveSdAccessLock();
+            return result;
         });
 
         mcp_server.AddTool("self.disp.listImages", "读取当前或指定用户图片文件夹里的图片清单，返回可传给 SwitchPictures 的序号和路径。folder 可填 root 或 05_user_ai_img 下的一级子文件夹名。", PropertyList({Property("folder", kPropertyTypeString, std::string(""))}), [this](const PropertyList &properties) -> ReturnValue {
             std::string folder = properties["folder"].value<std::string>();
+            if (!TakeSdAccessLock()) {
+                return std::string("SD card is busy; try again");
+            }
             std::string path = folder.empty() ? current_user_ai_img_dir : ResolveUserAiImgPath(folder);
             if (path.empty() || !DirectoryExists(path)) {
+                GiveSdAccessLock();
                 return std::string("invalid folder: ") + folder;
             }
 
@@ -196,13 +218,18 @@ class waveshare_PhotoPainter : public WifiBoard {
                 result += "\n" + std::to_string(index++) + ": " + image->sdcard_name;
             }
             list_iterator_destroy(it);
+            GiveSdAccessLock();
             return result;
         });
 
         mcp_server.AddTool("self.disp.setImageFolder", "切换要浏览和显示的用户图片文件夹。folder 填 root 或 05_user_ai_img 下的一级子文件夹名；切换后可用 SwitchPictures 显示指定序号。", PropertyList({Property("folder", kPropertyTypeString, std::string("root"))}), [this](const PropertyList &properties) -> ReturnValue {
             std::string folder = properties["folder"].value<std::string>();
+            if (!TakeSdAccessLock()) {
+                return std::string("SD card is busy; try again");
+            }
             std::string path = ResolveUserAiImgPath(folder);
             if (path.empty() || !DirectoryExists(path)) {
+                GiveSdAccessLock();
                 return std::string("invalid folder: ") + folder;
             }
 
@@ -210,21 +237,30 @@ class waveshare_PhotoPainter : public WifiBoard {
             sdcard_bmp_Quantity = SDPort->SDPort_GetScanListValue();
             img_loopCount = sdcard_bmp_Quantity;
             current_user_ai_img_dir = path;
-            return std::string("folder=") + path + ", images=" + std::to_string(sdcard_bmp_Quantity);
+            std::string result = std::string("folder=") + path + ", images=" + std::to_string(sdcard_bmp_Quantity);
+            GiveSdAccessLock();
+            return result;
         });
 
         mcp_server.AddTool("self.disp.readFolderMeta", "读取当前或指定用户图片文件夹里的 META.md，用来理解这个文件夹图片内容。folder 可填 root 或 05_user_ai_img 下的一级子文件夹名。", PropertyList({Property("folder", kPropertyTypeString, std::string(""))}), [this](const PropertyList &properties) -> ReturnValue {
             std::string folder = properties["folder"].value<std::string>();
+            if (!TakeSdAccessLock()) {
+                return std::string("SD card is busy; try again");
+            }
             std::string path = folder.empty() ? current_user_ai_img_dir : ResolveUserAiImgPath(folder);
             if (path.empty() || !DirectoryExists(path)) {
+                GiveSdAccessLock();
                 return std::string("invalid folder: ") + folder;
             }
 
             std::string meta_path = path + "/META.md";
             if (!FileExists(meta_path)) {
+                GiveSdAccessLock();
                 return std::string("META.md not found in ") + path;
             }
-            return ReadTextFile(meta_path, 4096);
+            std::string content = ReadTextFile(meta_path, 4096);
+            GiveSdAccessLock();
+            return content;
         });
 
         mcp_server.AddTool("self.disp.writeFolderMeta", "写入当前或指定用户图片文件夹里的 META.md。folder 可填 root 或 05_user_ai_img 下的一级子文件夹名；content 是要保存的 Markdown 内容。", PropertyList({Property("folder", kPropertyTypeString, std::string("")), Property("content", kPropertyTypeString)}), [this](const PropertyList &properties) -> ReturnValue {
@@ -234,12 +270,18 @@ class waveshare_PhotoPainter : public WifiBoard {
                 return std::string("META.md content is too long; max 4096 bytes");
             }
 
+            if (!TakeSdAccessLock()) {
+                return std::string("SD card is busy; try again");
+            }
             std::string path = folder.empty() ? current_user_ai_img_dir : ResolveUserAiImgPath(folder);
             if (path.empty() || !DirectoryExists(path)) {
+                GiveSdAccessLock();
                 return std::string("invalid folder: ") + folder;
             }
 
-            return WriteTextFile(path + "/META.md", content);
+            bool ok = WriteTextFile(path + "/META.md", content);
+            GiveSdAccessLock();
+            return ok;
         });
 
         mcp_server.AddTool("self.disp.isSHTC3", "获取设备温度和湿度", PropertyList(), [this](const PropertyList &) -> ReturnValue {
