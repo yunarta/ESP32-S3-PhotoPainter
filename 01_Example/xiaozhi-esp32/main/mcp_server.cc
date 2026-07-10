@@ -290,7 +290,7 @@ void McpServer::AddUserOnlyTools() {
 
 
     // RTC reminder scheduler
-    AddUserOnlyTool("self.reminder.add",
+    AddTool("self.reminder.add",
         "Add or update an RTC reminder that starts Xiaozhi at a local clock time. Use this when the user asks to turn on/start/wake at a specific time.",
         PropertyList({
             Property("hour", kPropertyTypeInteger, 0, 23),
@@ -311,14 +311,14 @@ void McpServer::AddUserOnlyTools() {
             return id;
         });
 
-    AddUserOnlyTool("self.reminder.list",
+    AddTool("self.reminder.list",
         "List RTC reminders, including whether the device time is valid and each reminder's next fire time.",
         PropertyList(),
         [](const PropertyList& properties) -> ReturnValue {
             return CronScheduler::GetInstance().GetRemindersJson();
         });
 
-    AddUserOnlyTool("self.reminder.remove",
+    AddTool("self.reminder.remove",
         "Remove an RTC reminder by id.",
         PropertyList({
             Property("id", kPropertyTypeString)
@@ -327,7 +327,7 @@ void McpServer::AddUserOnlyTools() {
             return CronScheduler::GetInstance().RemoveReminder(properties["id"].value<std::string>());
         });
 
-    AddUserOnlyTool("self.reminder.set_enabled",
+    AddTool("self.reminder.set_enabled",
         "Enable or disable an RTC reminder by id.",
         PropertyList({
             Property("id", kPropertyTypeString),
@@ -339,7 +339,7 @@ void McpServer::AddUserOnlyTools() {
                 properties["enabled"].value<bool>());
         });
 
-    AddUserOnlyTool("self.reminder.clear",
+    AddTool("self.reminder.clear",
         "Remove all RTC reminders.",
         PropertyList(),
         [](const PropertyList& properties) -> ReturnValue {
