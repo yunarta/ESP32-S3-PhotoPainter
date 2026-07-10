@@ -20,6 +20,9 @@
 
 static const char *USER_AI_IMG_ROOT = "/sdcard/05_user_ai_img";
 static std::string current_user_ai_img_dir = USER_AI_IMG_ROOT;
+static bool current_user_ai_img_recursive = true;
+static int current_user_ai_img_order = 0;
+static int current_user_ai_img_recent_limit = 20;
 
 static bool IsSafeRelativeFolder(const std::string &folder) {
     if (folder.empty() || folder.size() > 48) {
@@ -73,6 +76,37 @@ static bool WriteTextFile(const std::string &path, const std::string &content) {
     size_t written = fwrite(content.data(), 1, content.size(), file);
     fclose(file);
     return written == content.size();
+}
+
+
+static int ResolveImageOrderMode(const std::string &mode) {
+    if (mode == "default" || mode == "all") {
+        return 0;
+    }
+    if (mode == "newest" || mode == "terbaru") {
+        return 1;
+    }
+    if (mode == "oldest" || mode == "terlama") {
+        return 2;
+    }
+    if (mode == "random" || mode == "acak") {
+        return 3;
+    }
+    if (mode == "recent_random" || mode == "recent" || mode == "terbaru_random") {
+        return 4;
+    }
+    return -1;
+}
+
+static std::string RefreshImageList(const std::string &path, bool recursive, int order_mode, int recent_limit) {
+    SDPort->SDPort_ScanListDir(path.c_str(), recursive, order_mode, recent_limit);
+    sdcard_bmp_Quantity = SDPort->SDPort_GetScanListValue();
+    img_loopCount = sdcard_bmp_Quantity;
+    current_user_ai_img_dir = path;
+    current_user_ai_img_recursive = recursive;
+    current_user_ai_img_order = order_mode;
+    current_user_ai_img_recent_limit = recent_limit;
+    return std::string("folder=") + path + ", recursive=" + (recursive ? "true" : "false") + ", images=" + std::to_string(sdcard_bmp_Quantity);
 }
 
 static bool TakeSdAccessLock() {
@@ -206,12 +240,10 @@ class waveshare_PhotoPainter : public WifiBoard {
                 return std::string("invalid folder: ") + folder;
             }
 
-            SDPort->SDPort_ScanListDir(path.c_str());
-            sdcard_bmp_Quantity = SDPort->SDPort_GetScanListValue();
-            img_loopCount = sdcard_bmp_Quantity;
-            current_user_ai_img_dir = path;
-
-            std::string result = "folder=" + path + ", images=" + std::to_string(sdcard_bmp_Quantity);
+            bool recursive = folder.empty() ? current_user_ai_img_recursive : false;
+            int order_mode = folder.empty() ? current_user_ai_img_order : 0;
+            int recent_limit = folder.empty() ? current_user_ai_img_recent_limit : 20;
+            std::string result = RefreshImageList(path, recursive, order_mode, recent_limit);
             list_t *list = SDPort->SDPort_GetListHost();
             list_iterator_t *it = list_iterator_new(list, LIST_HEAD);
             list_node_t *node = NULL;
@@ -236,13 +268,42 @@ class waveshare_PhotoPainter : public WifiBoard {
                 return std::string("invalid folder: ") + folder;
             }
 
-            SDPort->SDPort_ScanListDir(path.c_str());
-            sdcard_bmp_Quantity = SDPort->SDPort_GetScanListValue();
-            img_loopCount = sdcard_bmp_Quantity;
-            current_user_ai_img_dir = path;
-            std::string result = std::string("folder=") + path + ", images=" + std::to_string(sdcard_bmp_Quantity);
+            std::string result = RefreshImageList(path, false, 0, 20);
             GiveSdAccessLock();
             return result;
+        });
+
+
+
+        mcp_server.AddTool("self.disp.setAllImageFolders", "恢复默认模式：扫描 /sdcard/05_user_ai_img 以及下面所有子文件夹里的全部图片。", PropertyList(), [this](const PropertyList &) -> ReturnValue {
+            if (!TakeSdAccessLock()) {
+                return std::string("SD card is busy; try again");
+            }
+            std::string result = RefreshImageList(USER_AI_IMG_ROOT, true, 0, 20);
+            GiveSdAccessLock();
+            return result;
+        });
+
+        mcp_server.AddTool("self.disp.setImageOrder", "设置当前图片列表顺序。mode 支持 default/all、random/acak、newest/terbaru、oldest/terlama、recent_random/terbaru_random；recent_random 默认取最近20张后打乱。", PropertyList({Property("mode", kPropertyTypeString), Property("recent_limit", kPropertyTypeInteger, 20)}), [this](const PropertyList &properties) -> ReturnValue {
+            std::string mode = properties["mode"].value<std::string>();
+            int recent_limit = properties["recent_limit"].value<int>();
+            if (recent_limit < 1) {
+                recent_limit = 20;
+            }
+            int order_mode = ResolveImageOrderMode(mode);
+            if (order_mode < 0) {
+                return std::string("invalid mode: ") + mode;
+            }
+            if (!TakeSdAccessLock()) {
+                return std::string("SD card is busy; try again");
+            }
+            bool recursive = current_user_ai_img_recursive;
+            if (order_mode == 0 && current_user_ai_img_dir == USER_AI_IMG_ROOT) {
+                recursive = true;
+            }
+            std::string result = RefreshImageList(current_user_ai_img_dir, recursive, order_mode, recent_limit);
+            GiveSdAccessLock();
+            return result + ", mode=" + mode;
         });
 
         mcp_server.AddTool("self.disp.readFolderMeta", "读取当前或指定用户图片文件夹里的 META.md，用来理解这个文件夹图片内容。folder 可填 root 或 05_user_ai_img 下的一级子文件夹名。", PropertyList({Property("folder", kPropertyTypeString, std::string(""))}), [this](const PropertyList &properties) -> ReturnValue {

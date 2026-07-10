@@ -285,7 +285,7 @@ void User_xiaozhi_app_init(void)                        // Initialization in the
     str_ai_chat_buff   = (char *) heap_caps_malloc(1024, MALLOC_CAP_SPIRAM);
     ai_IMG_Group       = xEventGroupCreate();
     ai_IMG_LoopGroup       = xEventGroupCreate();
-    SDPort->SDPort_ScanListDir("/sdcard/05_user_ai_img");       // Place the image data under the linked list
+    SDPort->SDPort_ScanListDir("/sdcard/05_user_ai_img", true, 0, 20);       // Place all user AI images (including subfolders) under the linked list
     sdcard_bmp_Quantity = SDPort->SDPort_GetScanListValue();    // Traverse the linked list to count the number of images
     img_loopCount = sdcard_bmp_Quantity;
     xTaskCreate(gui_user_Task, "gui_user_Task", 6 * 1024, &sdcard_doc_count, 2, NULL);

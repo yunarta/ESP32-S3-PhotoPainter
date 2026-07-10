@@ -8,7 +8,7 @@
 
 typedef struct
 {
-    char sdcard_name[80];  
+    char sdcard_name[160];
 }CustomSDPortNode_t;
 
 class CustomSDPort
@@ -33,6 +33,7 @@ public:
     sdmmc_card_t* SDPort_GetSdMMCHost();
     void SDPort_ClearScanList();
     void SDPort_ScanListDir(const char *path);
+    void SDPort_ScanListDir(const char *path, bool recursive, int order_mode, int recent_limit);
     list_t* SDPort_GetListHost();
     int SDPort_GetSdcardInitOK();
     int SDPort_GetScanListValue(); 
