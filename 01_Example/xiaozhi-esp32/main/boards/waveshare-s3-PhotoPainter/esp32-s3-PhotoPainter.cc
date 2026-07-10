@@ -127,8 +127,11 @@ class waveshare_PhotoPainter : public WifiBoard {
 
     void InitializeTools() {
         auto &mcp_server = McpServer::GetInstance();
-        mcp_server.AddTool("self.disp.SwitchPictures", "切换本地或 SD 卡中的图片，通过整数参数指定图片序号（如 “显示第 1 张图片”）", PropertyList({Property("value", kPropertyTypeInteger, 1, sdcard_bmp_Quantity)}), [this](const PropertyList &properties) -> ReturnValue {
+        mcp_server.AddTool("self.disp.SwitchPictures", "切换本地或 SD 卡中的图片，通过整数参数指定图片序号（如 “显示第 1 张图片”）。图片数量会从当前已扫描的 SD 文件夹动态校验。", PropertyList({Property("value", kPropertyTypeInteger)}), [this](const PropertyList &properties) -> ReturnValue {
             int value = properties["value"].value<int>();
+            if (value < 1 || value > sdcard_bmp_Quantity) {
+                return std::string("invalid image index: ") + std::to_string(value) + ", available images=" + std::to_string(sdcard_bmp_Quantity);
+            }
             sdcard_doc_count = value;
             xEventGroupSetBits(epaper_groups, 0x02);        //  0000  0010
             return true;
