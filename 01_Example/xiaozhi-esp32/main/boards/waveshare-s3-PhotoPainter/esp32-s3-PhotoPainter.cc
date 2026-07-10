@@ -369,7 +369,7 @@ class waveshare_PhotoPainter : public WifiBoard {
             return result;
         });
 
-        mcp_server.AddTool("self.disp.showLatestImages", "显示最新图片。count 默认 20；random=true 表示先取最新 count 张再随机显示其中一张。folder 为空时扫描所有 05_user_ai_img 子文件夹。", PropertyList({Property("count", kPropertyTypeInteger, 20), Property("random", kPropertyTypeBoolean, false), Property("folder", kPropertyTypeString, std::string("")} ), [this](const PropertyList &properties) -> ReturnValue {
+        mcp_server.AddTool("self.disp.showLatestImages", "显示最新图片。count 默认 20；random=true 表示先取最新 count 张再随机显示其中一张。folder 为空时扫描所有 05_user_ai_img 子文件夹。", PropertyList({Property("count", kPropertyTypeInteger, 20), Property("random", kPropertyTypeBoolean, false), Property("folder", kPropertyTypeString, std::string(""))}), [this](const PropertyList &properties) -> ReturnValue {
             int count = properties["count"].value<int>();
             bool random = properties["random"].value<bool>();
             std::string folder = properties["folder"].value<std::string>();
