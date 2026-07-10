@@ -1,6 +1,8 @@
 #include "cron_scheduler.h"
 
 #include "application.h"
+#include "board.h"
+#include "display.h"
 #include "device_state.h"
 #include "settings.h"
 
@@ -300,7 +302,9 @@ void CronScheduler::CheckDueReminders() {
         Application::GetInstance().Schedule([reminder]() {
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateIdle) {
-                app.WakeWordInvoke(BuildReminderPrompt(reminder, time(nullptr)));
+                auto prompt = BuildReminderPrompt(reminder, time(nullptr));
+                Board::GetInstance().GetDisplay()->SetChatMessage("system", prompt.c_str());
+                app.StartListening();
             } else {
                 ESP_LOGW(TAG, "Skip reminder %s because device is busy", reminder.id.c_str());
             }
