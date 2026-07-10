@@ -3,6 +3,7 @@
 #include "board.h"
 #include "display.h"
 #include "settings.h"
+#include "cron_scheduler.h"
 
 #include <esp_log.h>
 #include <esp_sleep.h>
@@ -92,8 +93,12 @@ void SleepTimer::CheckTimer() {
                     lv_refr_now(nullptr);
                     lvgl_port_stop();
     
-                    // 配置timer唤醒源（30秒后自动唤醒）
-                    esp_sleep_enable_timer_wakeup(30 * 1000000);
+                    // Configure RTC timer wakeup. Prefer the next reminder if it is sooner than the default poll.
+                    int64_t wakeup_us = CronScheduler::GetInstance().GetNextWakeupDelayUs();
+                    if (wakeup_us <= 0 || wakeup_us > 30 * 1000000LL) {
+                        wakeup_us = 30 * 1000000LL;
+                    }
+                    esp_sleep_enable_timer_wakeup(wakeup_us);
                     
                     // 进入light sleep模式
                     esp_light_sleep_start();
@@ -118,6 +123,10 @@ void SleepTimer::CheckTimer() {
             on_enter_deep_sleep_mode_();
         }
 
+        int64_t wakeup_us = CronScheduler::GetInstance().GetNextWakeupDelayUs();
+        if (wakeup_us > 0) {
+            esp_sleep_enable_timer_wakeup(wakeup_us);
+        }
         esp_deep_sleep_start();
     }
 }

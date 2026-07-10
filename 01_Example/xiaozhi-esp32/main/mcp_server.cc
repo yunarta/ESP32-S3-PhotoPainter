@@ -15,6 +15,7 @@
 #include "oled_display.h"
 #include "board.h"
 #include "settings.h"
+#include "cron_scheduler.h"
 #include "lvgl_theme.h"
 #include "lvgl_display.h"
 
@@ -286,6 +287,65 @@ void McpServer::AddUserOnlyTools() {
             });
     }
 #endif
+
+
+    // RTC reminder scheduler
+    AddUserOnlyTool("self.reminder.add",
+        "Add or update an RTC reminder that starts Xiaozhi at a local clock time. Use this when the user asks to turn on/start/wake at a specific time.",
+        PropertyList({
+            Property("hour", kPropertyTypeInteger, 0, 23),
+            Property("minute", kPropertyTypeInteger, 0, 59),
+            Property("id", kPropertyTypeString, std::string("")),
+            Property("label", kPropertyTypeString, std::string("Start Xiaozhi")),
+            Property("days", kPropertyTypeString, std::string("*")),
+            Property("enabled", kPropertyTypeBoolean, true)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            auto id = CronScheduler::GetInstance().AddReminder(
+                properties["id"].value<std::string>(),
+                properties["label"].value<std::string>(),
+                properties["hour"].value<int>(),
+                properties["minute"].value<int>(),
+                properties["days"].value<std::string>(),
+                properties["enabled"].value<bool>());
+            return id;
+        });
+
+    AddUserOnlyTool("self.reminder.list",
+        "List RTC reminders, including whether the device time is valid and each reminder's next fire time.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            return CronScheduler::GetInstance().GetRemindersJson();
+        });
+
+    AddUserOnlyTool("self.reminder.remove",
+        "Remove an RTC reminder by id.",
+        PropertyList({
+            Property("id", kPropertyTypeString)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            return CronScheduler::GetInstance().RemoveReminder(properties["id"].value<std::string>());
+        });
+
+    AddUserOnlyTool("self.reminder.set_enabled",
+        "Enable or disable an RTC reminder by id.",
+        PropertyList({
+            Property("id", kPropertyTypeString),
+            Property("enabled", kPropertyTypeBoolean)
+        }),
+        [](const PropertyList& properties) -> ReturnValue {
+            return CronScheduler::GetInstance().SetReminderEnabled(
+                properties["id"].value<std::string>(),
+                properties["enabled"].value<bool>());
+        });
+
+    AddUserOnlyTool("self.reminder.clear",
+        "Remove all RTC reminders.",
+        PropertyList(),
+        [](const PropertyList& properties) -> ReturnValue {
+            CronScheduler::GetInstance().ClearReminders();
+            return true;
+        });
 
     // Assets download url
     auto assets = Board::GetInstance().GetAssets();
