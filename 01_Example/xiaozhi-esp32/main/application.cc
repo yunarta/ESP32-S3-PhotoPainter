@@ -9,6 +9,7 @@
 #include "mcp_server.h"
 #include "assets.h"
 #include "settings.h"
+#include "cron_scheduler.h"
 
 #include <cstring>
 #include <esp_log.h>
@@ -548,6 +549,8 @@ void Application::Start() {
         ((Application*)arg)->MainEventLoop();
         vTaskDelete(NULL);
     }, "main_event_loop", 2048 * 4, this, 3, &main_event_loop_task_handle_);
+
+    CronScheduler::GetInstance().Start();
 }
 
 // Add a async task to MainLoop
