@@ -109,6 +109,47 @@ static std::string RefreshImageList(const std::string &path, bool recursive, int
     return std::string("folder=") + path + ", recursive=" + (recursive ? "true" : "false") + ", images=" + std::to_string(sdcard_bmp_Quantity);
 }
 
+
+static std::string ResolveImageScopePath(const std::string &scope, const std::string &folder, bool &recursive) {
+    if (scope == "all" || scope == "default" || scope == "semua") {
+        recursive = true;
+        return USER_AI_IMG_ROOT;
+    }
+
+    recursive = false;
+    return ResolveUserAiImgPath(folder);
+}
+
+static int ResolveActionOrderMode(const std::string &order, bool random, int recent_limit) {
+    if (random && (order == "newest" || order == "terbaru") && recent_limit > 0) {
+        return 4;
+    }
+    if (random) {
+        return 3;
+    }
+    return ResolveImageOrderMode(order);
+}
+
+static ReturnValue RefreshAndMaybeDisplay(const std::string &path, bool recursive, int order_mode, int limit, bool display_first, bool start_loop) {
+    if (path.empty() || !DirectoryExists(path)) {
+        return std::string("invalid folder or scope");
+    }
+
+    std::string result = RefreshImageList(path, recursive, order_mode, limit);
+    if (sdcard_bmp_Quantity < 1) {
+        return result + ", no images found";
+    }
+
+    if (display_first) {
+        sdcard_doc_count = 1;
+        xEventGroupSetBits(epaper_groups, 0x02);
+    }
+    if (start_loop) {
+        xEventGroupSetBits(ai_IMG_LoopGroup, 0x01);
+    }
+    return result;
+}
+
 static bool TakeSdAccessLock() {
     if (epaper_gui_semapHandle == NULL) {
         return true;
@@ -304,6 +345,76 @@ class waveshare_PhotoPainter : public WifiBoard {
             std::string result = RefreshImageList(current_user_ai_img_dir, recursive, order_mode, recent_limit);
             GiveSdAccessLock();
             return result + ", mode=" + mode;
+        });
+
+
+
+        mcp_server.AddTool("self.disp.showImages", "按条件选择并立即显示图片。scope=all/default/semua 会扫描 05_user_ai_img 所有子文件夹；scope=folder 用 folder 指定一级子文件夹。order 支持 default/all、newest/terbaru、oldest/terlama；recent_limit 可限制数量；random=true 会打乱候选。", PropertyList({Property("scope", kPropertyTypeString, std::string("all")), Property("folder", kPropertyTypeString, std::string("")), Property("order", kPropertyTypeString, std::string("default")), Property("recent_limit", kPropertyTypeInteger, 0), Property("random", kPropertyTypeBoolean, false)}), [this](const PropertyList &properties) -> ReturnValue {
+            std::string scope = properties["scope"].value<std::string>();
+            std::string folder = properties["folder"].value<std::string>();
+            std::string order = properties["order"].value<std::string>();
+            int recent_limit = properties["recent_limit"].value<int>();
+            bool random = properties["random"].value<bool>();
+            bool recursive = true;
+            std::string path = ResolveImageScopePath(scope, folder, recursive);
+            int order_mode = ResolveActionOrderMode(order, random, recent_limit);
+            if (order_mode < 0) {
+                return std::string("invalid order: ") + order;
+            }
+            if (!TakeSdAccessLock()) {
+                return std::string("SD card is busy; try again");
+            }
+            ReturnValue result = RefreshAndMaybeDisplay(path, recursive, order_mode, recent_limit, true, false);
+            GiveSdAccessLock();
+            return result;
+        });
+
+        mcp_server.AddTool("self.disp.showLatestImages", "显示最新图片。count 默认 20；random=true 表示先取最新 count 张再随机显示其中一张。folder 为空时扫描所有 05_user_ai_img 子文件夹。", PropertyList({Property("count", kPropertyTypeInteger, 20), Property("random", kPropertyTypeBoolean, false), Property("folder", kPropertyTypeString, std::string("")} ), [this](const PropertyList &properties) -> ReturnValue {
+            int count = properties["count"].value<int>();
+            bool random = properties["random"].value<bool>();
+            std::string folder = properties["folder"].value<std::string>();
+            if (count < 1) {
+                count = 20;
+            }
+            bool recursive = folder.empty();
+            std::string path = folder.empty() ? std::string(USER_AI_IMG_ROOT) : ResolveUserAiImgPath(folder);
+            int order_mode = random ? 4 : 1;
+            if (!TakeSdAccessLock()) {
+                return std::string("SD card is busy; try again");
+            }
+            ReturnValue result = RefreshAndMaybeDisplay(path, recursive, order_mode, count, true, false);
+            GiveSdAccessLock();
+            return result;
+        });
+
+        mcp_server.AddTool("self.disp.showAllImages", "恢复到全部图片并立即显示第一张；random=true 时会先随机打乱全部图片再显示。", PropertyList({Property("random", kPropertyTypeBoolean, false)}), [this](const PropertyList &properties) -> ReturnValue {
+            bool random = properties["random"].value<bool>();
+            if (!TakeSdAccessLock()) {
+                return std::string("SD card is busy; try again");
+            }
+            ReturnValue result = RefreshAndMaybeDisplay(USER_AI_IMG_ROOT, true, random ? 3 : 0, 0, true, false);
+            GiveSdAccessLock();
+            return result;
+        });
+
+        mcp_server.AddTool("self.disp.imgloopWithOptions", "启动幻灯片轮播并可指定随机/排序/范围。scope=all 或 folder；order 支持 default、newest、oldest；recent_limit 可配合 newest+random 做最近N张随机轮播。", PropertyList({Property("scope", kPropertyTypeString, std::string("all")), Property("folder", kPropertyTypeString, std::string("")), Property("order", kPropertyTypeString, std::string("default")), Property("recent_limit", kPropertyTypeInteger, 0), Property("random", kPropertyTypeBoolean, false)}), [this](const PropertyList &properties) -> ReturnValue {
+            std::string scope = properties["scope"].value<std::string>();
+            std::string folder = properties["folder"].value<std::string>();
+            std::string order = properties["order"].value<std::string>();
+            int recent_limit = properties["recent_limit"].value<int>();
+            bool random = properties["random"].value<bool>();
+            bool recursive = true;
+            std::string path = ResolveImageScopePath(scope, folder, recursive);
+            int order_mode = ResolveActionOrderMode(order, random, recent_limit);
+            if (order_mode < 0) {
+                return std::string("invalid order: ") + order;
+            }
+            if (!TakeSdAccessLock()) {
+                return std::string("SD card is busy; try again");
+            }
+            ReturnValue result = RefreshAndMaybeDisplay(path, recursive, order_mode, recent_limit, false, true);
+            GiveSdAccessLock();
+            return result;
         });
 
         mcp_server.AddTool("self.disp.readFolderMeta", "读取当前或指定用户图片文件夹里的 META.md，用来理解这个文件夹图片内容。folder 可填 root 或 05_user_ai_img 下的一级子文件夹名。", PropertyList({Property("folder", kPropertyTypeString, std::string(""))}), [this](const PropertyList &properties) -> ReturnValue {

@@ -289,6 +289,8 @@ void CustomSDPort::SDPort_ScanListDir(const char *path, bool recursive, int orde
             images.resize(recent_limit);
         }
         ShuffleSdImages(images);
+    } else if (recent_limit > 0 && images.size() > static_cast<size_t>(recent_limit)) {
+        images.resize(recent_limit);
     }
 
     for (const auto &image : images) {
