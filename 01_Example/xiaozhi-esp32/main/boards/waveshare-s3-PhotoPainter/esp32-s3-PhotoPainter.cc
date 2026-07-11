@@ -132,17 +132,17 @@ class waveshare_PhotoPainter : public WifiBoard {
             else return NULL;
         });
 
-        mcp_server.AddUserOnlyTool("self.disp.downloadLambdaPhoto", "Download a photo from a Lambda-provided URL and save it to a requested SD card directory. The directory can be an absolute /sdcard path or a relative subdirectory under /sdcard. This tool is intended for external MCP orchestration after another MCP obtains the Lambda download URL; it is hidden from normal assistant tool lists.", PropertyList({
+        mcp_server.AddUserOnlyTool("self.disp.downloadS3Photo", "Download an S3 photo from a provided URL and save it to a requested SD card directory. The directory can be an absolute /sdcard path or a relative subdirectory under /sdcard. This tool is intended for external MCP orchestration after another MCP obtains the S3 download URL; it is hidden from normal assistant tool lists.", PropertyList({
             Property("url", kPropertyTypeString),
             Property("directory", kPropertyTypeString, "/sdcard/05_user_ai_img"),
-            Property("filename", kPropertyTypeString, "lambda_photo.jpg")
+            Property("filename", kPropertyTypeString, "s3_photo.jpg")
         }), [this](const PropertyList &properties) -> ReturnValue {
             auto url = properties["url"].value<std::string>();
             auto directory = properties["directory"].value<std::string>();
             auto filename = properties["filename"].value<std::string>();
 
             if (url.empty() || url.find("http") != 0) {
-                throw std::runtime_error("Invalid Lambda photo URL");
+                throw std::runtime_error("Invalid S3 photo URL");
             }
             if (directory.empty() || directory.find("..") != std::string::npos) {
                 throw std::runtime_error("directory must be a path under /sdcard");
@@ -170,13 +170,13 @@ class waveshare_PhotoPainter : public WifiBoard {
 
             auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
             if (!http->Open("GET", url)) {
-                throw std::runtime_error("Failed to open Lambda photo URL");
+                throw std::runtime_error("Failed to open S3 photo URL");
             }
 
             int status_code = http->GetStatusCode();
             if (status_code != 200) {
                 http->Close();
-                throw std::runtime_error("Unexpected Lambda photo status code: " + std::to_string(status_code));
+                throw std::runtime_error("Unexpected S3 photo status code: " + std::to_string(status_code));
             }
 
             FILE *file = fopen(path.c_str(), "wb");
@@ -193,7 +193,7 @@ class waveshare_PhotoPainter : public WifiBoard {
                     fclose(file);
                     http->Close();
                     remove(path.c_str());
-                    throw std::runtime_error("Failed to read Lambda photo response");
+                    throw std::runtime_error("Failed to read S3 photo response");
                 }
                 if (ret == 0) {
                     break;
@@ -213,7 +213,7 @@ class waveshare_PhotoPainter : public WifiBoard {
 
             if (total_written == 0) {
                 remove(path.c_str());
-                throw std::runtime_error("Lambda photo response was empty");
+                throw std::runtime_error("S3 photo response was empty");
             }
 
             if (SDPort->SDPort_AddImagePath(path.c_str()) == ESP_OK) {
