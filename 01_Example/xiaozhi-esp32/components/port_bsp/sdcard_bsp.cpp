@@ -1,8 +1,15 @@
 #include <stdio.h>
+#include <assert.h>
+#include <time.h>
 #include <sys/stat.h>
 #include <sys/unistd.h>
 #include <dirent.h>
 #include <string.h>
+#include <strings.h>
+#include <algorithm>
+#include <string>
+#include <vector>
+#include <esp_random.h>
 #include <freertos/FreeRTOS.h>
 #include "sdcard_bsp.h"
 
@@ -39,7 +46,11 @@ SdName_(SdName)
 }
 
 CustomSDPort::~CustomSDPort() {
-
+    SDPort_ClearScanList();
+    if (ScanListHandle != NULL) {
+        list_destroy(ScanListHandle);
+        ScanListHandle = NULL;
+    }
 }
 
 int CustomSDPort::SDPort_WriteFile(const char *path, const void *data, size_t data_len) {
@@ -171,39 +182,127 @@ int CustomSDPort::SDPort_GetScanListValue(void) {
     return Quantity;
 }
 
-void CustomSDPort::SDPort_ScanListDir(const char *path) {
+void CustomSDPort::SDPort_ClearScanList() {
+    if (ScanListHandle == NULL) {
+        return;
+    }
+
+    list_node_t *node = NULL;
+    while ((node = list_lpop(ScanListHandle)) != NULL) {
+        if (node->val != NULL) {
+            LIST_FREE(node->val);
+        }
+        LIST_FREE(node);
+    }
+    CurrentlyNode = NULL;
+    ImgValue = 0;
+}
+
+typedef struct {
+    std::string path;
+    time_t mtime;
+} SdImageEntry_t;
+
+static bool IsImageFileName(const char *name) {
+    if (strstr(name, "sys_decode.bmp") != NULL) {
+        return false;
+    }
+
+    const char *ext = strrchr(name, '.');
+    if (ext == NULL) {
+        return false;
+    }
+    return strcasecmp(ext, ".bmp") == 0 || strcasecmp(ext, ".jpg") == 0 || strcasecmp(ext, ".png") == 0;
+}
+
+static void ShuffleSdImages(std::vector<SdImageEntry_t> &images) {
+    for (size_t i = images.size(); i > 1; --i) {
+        size_t j = esp_random() % i;
+        std::swap(images[i - 1], images[j]);
+    }
+}
+
+static void CollectSdImages(const char *path, bool recursive, std::vector<SdImageEntry_t> &images) {
     struct dirent *entry;
     DIR           *dir = opendir(path);
 
     if (dir == NULL) {
-        ESP_LOGE(TAG, "Failed to open directory: %s", path);
+        ESP_LOGE("SDPort", "Failed to open directory: %s", path);
         return;
     }
 
     while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_type == DT_DIR) { 
-            ESP_LOGI(TAG, "Directory: %s", entry->d_name);
-        } else {
-            if(strstr(entry->d_name,"sys_decode.bmp")) {   //这个文件是jpg或者png转码成bmp的,不需要加入列表
-                continue;
-            }
-            if (strstr(entry->d_name, ".bmp") || strstr(entry->d_name, ".jpg") || strstr(entry->d_name, ".png") \
-                || strstr(entry->d_name, ".BMP") || strstr(entry->d_name, ".JPG") || strstr(entry->d_name, ".PNG")) {
-                uint16_t       Namestrlen   = strlen(path) + strlen(entry->d_name) + 1 + 1; 
-                if (Namestrlen >= 80) {
-                    ESP_LOGE(TAG, "scan file fill _strlen:%d", Namestrlen);
-                    continue;
-                }
-                CustomSDPortNode_t *node_data = (CustomSDPortNode_t *) LIST_MALLOC(sizeof(CustomSDPortNode_t));
-                assert(node_data);
-                snprintf(node_data->sdcard_name, sizeof(node_data->sdcard_name), "%s/%s", path, entry->d_name); 
-                list_rpush(ScanListHandle, list_node_new(node_data)); 
-                ESP_LOGW("Scan_Dir","DirDoc:%s,size:%d",node_data->sdcard_name,strlen(node_data->sdcard_name));
-                ImgValue++;
-            }                                     
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
         }
+
+        std::string full_path = std::string(path) + "/" + entry->d_name;
+        struct stat st = {};
+        if (stat(full_path.c_str(), &st) != 0) {
+            ESP_LOGE("SDPort", "Failed to stat: %s", full_path.c_str());
+            continue;
+        }
+
+        if (S_ISDIR(st.st_mode)) {
+            ESP_LOGI("SDPort", "Directory: %s", full_path.c_str());
+            if (recursive) {
+                CollectSdImages(full_path.c_str(), recursive, images);
+            }
+            continue;
+        }
+
+        if (!S_ISREG(st.st_mode) || !IsImageFileName(entry->d_name)) {
+            continue;
+        }
+
+        if (full_path.size() >= sizeof(((CustomSDPortNode_t *)0)->sdcard_name)) {
+            ESP_LOGE("SDPort", "scan file path too long:%d", static_cast<int>(full_path.size()));
+            continue;
+        }
+        images.push_back({full_path, st.st_mtime});
     }
     closedir(dir);
+}
+
+void CustomSDPort::SDPort_ScanListDir(const char *path) {
+    SDPort_ScanListDir(path, false, 0, 0);
+}
+
+void CustomSDPort::SDPort_ScanListDir(const char *path, bool recursive, int order_mode, int recent_limit) {
+    SDPort_ClearScanList();
+
+    std::vector<SdImageEntry_t> images;
+    CollectSdImages(path, recursive, images);
+
+    if (order_mode == 1 || order_mode == 4) {
+        std::sort(images.begin(), images.end(), [](const SdImageEntry_t &a, const SdImageEntry_t &b) {
+            return a.mtime > b.mtime;
+        });
+    } else if (order_mode == 2) {
+        std::sort(images.begin(), images.end(), [](const SdImageEntry_t &a, const SdImageEntry_t &b) {
+            return a.mtime < b.mtime;
+        });
+    } else if (order_mode == 3) {
+        ShuffleSdImages(images);
+    }
+
+    if (order_mode == 4) {
+        if (recent_limit > 0 && images.size() > static_cast<size_t>(recent_limit)) {
+            images.resize(recent_limit);
+        }
+        ShuffleSdImages(images);
+    } else if (recent_limit > 0 && images.size() > static_cast<size_t>(recent_limit)) {
+        images.resize(recent_limit);
+    }
+
+    for (const auto &image : images) {
+        CustomSDPortNode_t *node_data = (CustomSDPortNode_t *) LIST_MALLOC(sizeof(CustomSDPortNode_t));
+        assert(node_data);
+        snprintf(node_data->sdcard_name, sizeof(node_data->sdcard_name), "%s", image.path.c_str());
+        list_rpush(ScanListHandle, list_node_new(node_data));
+        ESP_LOGW("Scan_Dir", "DirDoc:%s,size:%d", node_data->sdcard_name, strlen(node_data->sdcard_name));
+        ImgValue++;
+    }
 }
 
 list_t* CustomSDPort::SDPort_GetListHost() {
