@@ -18,6 +18,25 @@
 
 #define TAG "esp-s3-PhotoPainter"
 
+static bool IsAwsS3Url(const std::string &url) {
+    if (url.find("https://") != 0 && url.find("http://") != 0) {
+        return false;
+    }
+
+    size_t host_start = url.find("://") + 3;
+    size_t host_end = url.find('/', host_start);
+    std::string host = url.substr(host_start, host_end - host_start);
+    size_t query_start = host.find('?');
+    if (query_start != std::string::npos) {
+        host = host.substr(0, query_start);
+    }
+
+    return host == "s3.amazonaws.com" ||
+           host.find(".s3.amazonaws.com") != std::string::npos ||
+           (host.find(".s3.") != std::string::npos && host.find(".amazonaws.com") != std::string::npos) ||
+           (host.find("s3.") == 0 && host.find(".amazonaws.com") != std::string::npos);
+}
+
 static bool EnsureDirectoryExists(const std::string &directory) {
     if (directory.empty()) {
         return false;
@@ -132,17 +151,17 @@ class waveshare_PhotoPainter : public WifiBoard {
             else return NULL;
         });
 
-        mcp_server.AddUserOnlyTool("self.disp.downloadS3Photo", "Download an S3 photo from a provided URL and save it to a requested SD card directory. The directory can be an absolute /sdcard path or a relative subdirectory under /sdcard. This tool is intended for external MCP orchestration after another MCP obtains the S3 download URL; it is hidden from normal assistant tool lists.", PropertyList({
-            Property("url", kPropertyTypeString),
+        mcp_server.AddTool("self.disp.downloadS3Photo", "Download an AWS S3 photo from an S3 URL and save it to a requested SD card directory. Use this only with AWS S3 URLs. The directory can be an absolute /sdcard path or a relative subdirectory under /sdcard.", PropertyList({
+            Property("s3_url", kPropertyTypeString),
             Property("directory", kPropertyTypeString, "/sdcard/05_user_ai_img"),
             Property("filename", kPropertyTypeString, "s3_photo.jpg")
         }), [this](const PropertyList &properties) -> ReturnValue {
-            auto url = properties["url"].value<std::string>();
+            auto s3_url = properties["s3_url"].value<std::string>();
             auto directory = properties["directory"].value<std::string>();
             auto filename = properties["filename"].value<std::string>();
 
-            if (url.empty() || url.find("http") != 0) {
-                throw std::runtime_error("Invalid S3 photo URL");
+            if (!IsAwsS3Url(s3_url)) {
+                throw std::runtime_error("s3_url must be an AWS S3 URL");
             }
             if (directory.empty() || directory.find("..") != std::string::npos) {
                 throw std::runtime_error("directory must be a path under /sdcard");
@@ -169,7 +188,7 @@ class waveshare_PhotoPainter : public WifiBoard {
             }
 
             auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
-            if (!http->Open("GET", url)) {
+            if (!http->Open("GET", s3_url)) {
                 throw std::runtime_error("Failed to open S3 photo URL");
             }
 
