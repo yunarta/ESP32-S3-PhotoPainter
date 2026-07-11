@@ -214,6 +214,32 @@ int CustomSDPort::SDPort_GetSdcardInitOK() {
     return is_SdcardInitOK;
 }
 
+
+int CustomSDPort::SDPort_AddImagePath(const char *path) {
+    if (path == NULL || path[0] == '\0') {
+        ESP_LOGE(TAG, "Invalid image path");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (!(strstr(path, ".bmp") || strstr(path, ".jpg") || strstr(path, ".png") ||
+          strstr(path, ".BMP") || strstr(path, ".JPG") || strstr(path, ".PNG"))) {
+        ESP_LOGE(TAG, "Unsupported image path: %s", path);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    CustomSDPortNode_t *node_data = (CustomSDPortNode_t *) LIST_MALLOC(sizeof(CustomSDPortNode_t));
+    if (node_data == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate image list node");
+        return ESP_ERR_NO_MEM;
+    }
+
+    snprintf(node_data->sdcard_name, sizeof(node_data->sdcard_name), "%s", path);
+    list_rpush(ScanListHandle, list_node_new(node_data));
+    ImgValue++;
+    ESP_LOGI(TAG, "Added image to scan list: %s", node_data->sdcard_name);
+    return ESP_OK;
+}
+
 void CustomSDPort::SDPort_SetCurrentlyNode(list_node_t *node) {
     CurrentlyNode = node;
 }

@@ -35,6 +35,7 @@ public:
     list_t* SDPort_GetListHost();
     int SDPort_GetSdcardInitOK();
     int SDPort_GetScanListValue(); 
+    int SDPort_AddImagePath(const char *path);
 
     void SDPort_SetCurrentlyNode(list_node_t *node);
     list_node_t* SDPort_GetCurrentlyNode(void);
