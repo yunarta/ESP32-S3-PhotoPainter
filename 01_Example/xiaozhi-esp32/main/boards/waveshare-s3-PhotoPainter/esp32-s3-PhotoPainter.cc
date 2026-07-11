@@ -10,8 +10,11 @@
 #include <driver/i2c_master.h>
 #include <esp_log.h>
 #include <dirent.h>
+#include <algorithm>
+#include <cctype>
 #include <stdio.h>
 #include <string>
+#include <vector>
 #include <sys/stat.h>
 
 #include "mcp_server.h"
@@ -148,6 +151,101 @@ static ReturnValue RefreshAndMaybeDisplay(const std::string &path, bool recursiv
         xEventGroupSetBits(ai_IMG_LoopGroup, 0x01);
     }
     return result;
+}
+
+
+typedef struct {
+    int index;
+    int score;
+    std::string path;
+    std::string title;
+} ImageSearchResult_t;
+
+static std::string ToLowerAscii(const std::string &value) {
+    std::string lowered = value;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return lowered;
+}
+
+static std::string ImageTitleFromPath(const std::string &path) {
+    size_t slash = path.find_last_of('/');
+    std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
+    size_t dot = name.find_last_of('.');
+    if (dot != std::string::npos) {
+        name = name.substr(0, dot);
+    }
+    return name;
+}
+
+static int ScoreImageTitle(const std::string &query, const std::string &title, const std::string &path) {
+    std::string q = ToLowerAscii(query);
+    std::string t = ToLowerAscii(title);
+    std::string p = ToLowerAscii(path);
+    if (q.empty()) {
+        return 0;
+    }
+
+    int score = 0;
+    if (t == q) {
+        score += 1000;
+    }
+    if (t.find(q) != std::string::npos) {
+        score += 500;
+    }
+    if (p.find(q) != std::string::npos) {
+        score += 200;
+    }
+
+    size_t start = 0;
+    while (start < q.size()) {
+        size_t end = q.find(' ', start);
+        std::string token = q.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        if (token.size() > 1) {
+            if (t.find(token) != std::string::npos) {
+                score += 100;
+            }
+            if (p.find(token) != std::string::npos) {
+                score += 40;
+            }
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return score;
+}
+
+static std::vector<ImageSearchResult_t> SearchCurrentImageList(const std::string &query, int max_results) {
+    std::vector<ImageSearchResult_t> results;
+    list_t *list = SDPort->SDPort_GetListHost();
+    list_iterator_t *it = list_iterator_new(list, LIST_HEAD);
+    list_node_t *node = NULL;
+    int index = 1;
+    while ((node = list_iterator_next(it)) != NULL) {
+        CustomSDPortNode_t *image = (CustomSDPortNode_t *) node->val;
+        std::string path = image->sdcard_name;
+        std::string title = ImageTitleFromPath(path);
+        int score = ScoreImageTitle(query, title, path);
+        if (score > 0) {
+            results.push_back({index, score, path, title});
+        }
+        index++;
+    }
+    list_iterator_destroy(it);
+
+    std::sort(results.begin(), results.end(), [](const ImageSearchResult_t &a, const ImageSearchResult_t &b) {
+        if (a.score != b.score) {
+            return a.score > b.score;
+        }
+        return a.title < b.title;
+    });
+    if (max_results > 0 && results.size() > static_cast<size_t>(max_results)) {
+        results.resize(max_results);
+    }
+    return results;
 }
 
 static bool TakeSdAccessLock() {
@@ -415,6 +513,95 @@ class waveshare_PhotoPainter : public WifiBoard {
             ReturnValue result = RefreshAndMaybeDisplay(path, recursive, order_mode, recent_limit, false, true);
             GiveSdAccessLock();
             return result;
+        });
+
+
+
+        mcp_server.AddTool("self.disp.listImageTitles", "List title/nama file gambar dari scope saat ini atau folder tertentu, supaya AI bisa memilih nama yang paling cocok.", PropertyList({Property("scope", kPropertyTypeString, std::string("all")), Property("folder", kPropertyTypeString, std::string("")), Property("max_results", kPropertyTypeInteger, 50)}), [this](const PropertyList &properties) -> ReturnValue {
+            std::string scope = properties["scope"].value<std::string>();
+            std::string folder = properties["folder"].value<std::string>();
+            int max_results = properties["max_results"].value<int>();
+            bool recursive = true;
+            std::string path = ResolveImageScopePath(scope, folder, recursive);
+            if (!TakeSdAccessLock()) {
+                return std::string("SD card is busy; try again");
+            }
+            ReturnValue refresh = RefreshAndMaybeDisplay(path, recursive, 0, 0, false, false);
+            if (sdcard_bmp_Quantity < 1) {
+                GiveSdAccessLock();
+                return refresh;
+            }
+            std::string result = "titles=" + std::to_string(sdcard_bmp_Quantity);
+            list_t *list = SDPort->SDPort_GetListHost();
+            list_iterator_t *it = list_iterator_new(list, LIST_HEAD);
+            list_node_t *node = NULL;
+            int index = 1;
+            while ((node = list_iterator_next(it)) != NULL) {
+                if (max_results > 0 && index > max_results) {
+                    break;
+                }
+                CustomSDPortNode_t *image = (CustomSDPortNode_t *) node->val;
+                std::string image_path = image->sdcard_name;
+                result += "\n" + std::to_string(index) + ": " + ImageTitleFromPath(image_path) + " => " + image_path;
+                index++;
+            }
+            list_iterator_destroy(it);
+            GiveSdAccessLock();
+            return result;
+        });
+
+        mcp_server.AddTool("self.disp.searchImages", "Search gambar berdasarkan title/nama file. Gunakan ini saat user bilang misalnya 'gambar yang titlenya gundam'. Return kandidat dengan score supaya AI bisa inference mana file paling pas.", PropertyList({Property("query", kPropertyTypeString), Property("scope", kPropertyTypeString, std::string("all")), Property("folder", kPropertyTypeString, std::string("")), Property("max_results", kPropertyTypeInteger, 10)}), [this](const PropertyList &properties) -> ReturnValue {
+            std::string query = properties["query"].value<std::string>();
+            std::string scope = properties["scope"].value<std::string>();
+            std::string folder = properties["folder"].value<std::string>();
+            int max_results = properties["max_results"].value<int>();
+            bool recursive = true;
+            std::string path = ResolveImageScopePath(scope, folder, recursive);
+            if (!TakeSdAccessLock()) {
+                return std::string("SD card is busy; try again");
+            }
+            ReturnValue refresh = RefreshAndMaybeDisplay(path, recursive, 0, 0, false, false);
+            if (sdcard_bmp_Quantity < 1) {
+                GiveSdAccessLock();
+                return refresh;
+            }
+            auto results = SearchCurrentImageList(query, max_results);
+            if (results.empty()) {
+                GiveSdAccessLock();
+                return std::string("no image title matched: ") + query;
+            }
+            std::string response = "query=" + query + ", matches=" + std::to_string(results.size());
+            for (const auto &match : results) {
+                response += "\n" + std::to_string(match.index) + ": score=" + std::to_string(match.score) + ", title=" + match.title + ", path=" + match.path;
+            }
+            GiveSdAccessLock();
+            return response;
+        });
+
+        mcp_server.AddTool("self.disp.showImageByName", "Search gambar berdasarkan title/nama file lalu langsung tampilkan kandidat terbaik. Cocok untuk perintah: tampilkan gambar yang titlenya gundam.", PropertyList({Property("query", kPropertyTypeString), Property("scope", kPropertyTypeString, std::string("all")), Property("folder", kPropertyTypeString, std::string(""))}), [this](const PropertyList &properties) -> ReturnValue {
+            std::string query = properties["query"].value<std::string>();
+            std::string scope = properties["scope"].value<std::string>();
+            std::string folder = properties["folder"].value<std::string>();
+            bool recursive = true;
+            std::string path = ResolveImageScopePath(scope, folder, recursive);
+            if (!TakeSdAccessLock()) {
+                return std::string("SD card is busy; try again");
+            }
+            ReturnValue refresh = RefreshAndMaybeDisplay(path, recursive, 0, 0, false, false);
+            if (sdcard_bmp_Quantity < 1) {
+                GiveSdAccessLock();
+                return refresh;
+            }
+            auto results = SearchCurrentImageList(query, 1);
+            if (results.empty()) {
+                GiveSdAccessLock();
+                return std::string("no image title matched: ") + query;
+            }
+            sdcard_doc_count = results[0].index;
+            xEventGroupSetBits(epaper_groups, 0x02);
+            std::string response = "displaying index=" + std::to_string(results[0].index) + ", score=" + std::to_string(results[0].score) + ", title=" + results[0].title + ", path=" + results[0].path;
+            GiveSdAccessLock();
+            return response;
         });
 
         mcp_server.AddTool("self.disp.readFolderMeta", "读取当前或指定用户图片文件夹里的 META.md，用来理解这个文件夹图片内容。folder 可填 root 或 05_user_ai_img 下的一级子文件夹名。", PropertyList({Property("folder", kPropertyTypeString, std::string(""))}), [this](const PropertyList &properties) -> ReturnValue {
