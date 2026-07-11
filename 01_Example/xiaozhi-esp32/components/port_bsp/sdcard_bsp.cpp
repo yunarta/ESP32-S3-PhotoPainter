@@ -159,7 +159,7 @@ sdmmc_card_t* CustomSDPort::SDPort_GetSdMMCHost() {
 
 int CustomSDPort::SDPort_GetScanListValue(void) {
     int              Quantity = 0;
-    list_iterator_t *it       = list_iterator_new(ScanListHandle, LIST_HEAD); 
+    list_iterator_t *it       = list_iterator_new(ScanListHandle, LIST_HEAD);
     list_node_t     *node     = list_iterator_next(it);
     while (node != NULL) {
         CustomSDPortNode_t *sdcard_node = (CustomSDPortNode_t *) node->val;
@@ -167,7 +167,7 @@ int CustomSDPort::SDPort_GetScanListValue(void) {
         node = list_iterator_next(it);
         Quantity++;
     }
-    list_iterator_destroy(it); 
+    list_iterator_destroy(it);
     return Quantity;
 }
 
@@ -181,7 +181,7 @@ void CustomSDPort::SDPort_ScanListDir(const char *path) {
     }
 
     while ((entry = readdir(dir)) != NULL) {
-        if (entry->d_type == DT_DIR) { 
+        if (entry->d_type == DT_DIR) {
             ESP_LOGI(TAG, "Directory: %s", entry->d_name);
         } else {
             if(strstr(entry->d_name,"sys_decode.bmp")) {   //这个文件是jpg或者png转码成bmp的,不需要加入列表
@@ -189,18 +189,18 @@ void CustomSDPort::SDPort_ScanListDir(const char *path) {
             }
             if (strstr(entry->d_name, ".bmp") || strstr(entry->d_name, ".jpg") || strstr(entry->d_name, ".png") \
                 || strstr(entry->d_name, ".BMP") || strstr(entry->d_name, ".JPG") || strstr(entry->d_name, ".PNG")) {
-                uint16_t       Namestrlen   = strlen(path) + strlen(entry->d_name) + 1 + 1; 
-                if (Namestrlen >= 80) {
-                    ESP_LOGE(TAG, "scan file fill _strlen:%d", Namestrlen);
+                size_t         Namestrlen   = strlen(path) + strlen(entry->d_name) + 1 + 1;
+                if (Namestrlen >= sizeof(CustomSDPortNode_t::sdcard_name)) {
+                    ESP_LOGE(TAG, "scan file fill _strlen:%u", static_cast<unsigned>(Namestrlen));
                     continue;
                 }
                 CustomSDPortNode_t *node_data = (CustomSDPortNode_t *) LIST_MALLOC(sizeof(CustomSDPortNode_t));
                 assert(node_data);
-                snprintf(node_data->sdcard_name, sizeof(node_data->sdcard_name), "%s/%s", path, entry->d_name); 
-                list_rpush(ScanListHandle, list_node_new(node_data)); 
-                ESP_LOGW("Scan_Dir","DirDoc:%s,size:%d",node_data->sdcard_name,strlen(node_data->sdcard_name));
+                snprintf(node_data->sdcard_name, sizeof(node_data->sdcard_name), "%s/%s", path, entry->d_name);
+                list_rpush(ScanListHandle, list_node_new(node_data));
+                ESP_LOGW("Scan_Dir","DirDoc:%s,size:%u",node_data->sdcard_name,static_cast<unsigned>(strlen(node_data->sdcard_name)));
                 ImgValue++;
-            }                                     
+            }
         }
     }
     closedir(dir);
@@ -225,6 +225,11 @@ int CustomSDPort::SDPort_AddImagePath(const char *path) {
           strstr(path, ".BMP") || strstr(path, ".JPG") || strstr(path, ".PNG"))) {
         ESP_LOGE(TAG, "Unsupported image path: %s", path);
         return ESP_ERR_INVALID_ARG;
+    }
+
+    if (strlen(path) >= sizeof(CustomSDPortNode_t::sdcard_name)) {
+        ESP_LOGE(TAG, "Image path is too long: %s", path);
+        return ESP_ERR_INVALID_SIZE;
     }
 
     CustomSDPortNode_t *node_data = (CustomSDPortNode_t *) LIST_MALLOC(sizeof(CustomSDPortNode_t));

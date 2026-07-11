@@ -132,7 +132,7 @@ class waveshare_PhotoPainter : public WifiBoard {
             else return NULL;
         });
 
-        mcp_server.AddUserOnlyTool("self.disp.downloadLambdaPhoto", "Download a photo from a Lambda-provided URL and save it to a requested SD card directory. This tool is intended for external MCP orchestration after another MCP obtains the Lambda download URL; it is hidden from normal assistant tool lists.", PropertyList({
+        mcp_server.AddUserOnlyTool("self.disp.downloadLambdaPhoto", "Download a photo from a Lambda-provided URL and save it to a requested SD card directory. The directory can be an absolute /sdcard path or a relative subdirectory under /sdcard. This tool is intended for external MCP orchestration after another MCP obtains the Lambda download URL; it is hidden from normal assistant tool lists.", PropertyList({
             Property("url", kPropertyTypeString),
             Property("directory", kPropertyTypeString, "/sdcard/05_user_ai_img"),
             Property("filename", kPropertyTypeString, "lambda_photo.jpg")
@@ -145,13 +145,16 @@ class waveshare_PhotoPainter : public WifiBoard {
                 throw std::runtime_error("Invalid Lambda photo URL");
             }
             if (directory.empty() || directory.find("..") != std::string::npos) {
-                throw std::runtime_error("directory must be an absolute path under /sdcard");
+                throw std::runtime_error("directory must be a path under /sdcard");
+            }
+            if (directory[0] != '/') {
+                directory = "/sdcard/" + directory;
             }
             if (directory.back() == '/') {
                 directory.pop_back();
             }
             if (directory != "/sdcard" && directory.find("/sdcard/") != 0) {
-                throw std::runtime_error("directory must be an absolute path under /sdcard");
+                throw std::runtime_error("directory must be a path under /sdcard");
             }
             if (filename.empty() || filename.find('/') != std::string::npos || filename.find("..") != std::string::npos) {
                 throw std::runtime_error("filename must be a simple file name");
@@ -161,6 +164,9 @@ class waveshare_PhotoPainter : public WifiBoard {
                 throw std::runtime_error("Failed to create SD card directory: " + directory);
             }
             const std::string path = directory + "/" + filename;
+            if (path.size() >= sizeof(CustomSDPortNode_t::sdcard_name)) {
+                throw std::runtime_error("SD card image path is too long");
+            }
 
             auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
             if (!http->Open("GET", url)) {
