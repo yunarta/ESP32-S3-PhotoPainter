@@ -18,7 +18,8 @@ extern EventGroupHandle_t Red_led_Mode_queue;
 extern SemaphoreHandle_t epaper_gui_semapHandle;
 extern uint8_t Green_led_arg;           
 extern uint8_t Red_led_arg;
-extern int img_loopTimer;            
+extern int img_loopTimer;
+extern int img_loopCount;
 extern EventGroupHandle_t epaper_groups;
 extern EventGroupHandle_t ai_IMG_LoopGroup;
 
