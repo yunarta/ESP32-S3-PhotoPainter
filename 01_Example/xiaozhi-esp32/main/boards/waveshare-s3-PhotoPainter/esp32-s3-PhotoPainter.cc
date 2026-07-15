@@ -11,8 +11,66 @@
 #include <esp_log.h>
 
 #include "mcp_server.h"
+#include "board.h"
+#include <sys/stat.h>
+#include <cstdio>
+#include <cerrno>
 
 #define TAG "esp-s3-PhotoPainter"
+
+static bool IsAwsS3Url(const std::string &url) {
+    if (url.find("https://") != 0 && url.find("http://") != 0) {
+        return false;
+    }
+
+    size_t host_start = url.find("://") + 3;
+    size_t host_end = url.find('/', host_start);
+    std::string host = url.substr(host_start, host_end - host_start);
+    size_t query_start = host.find('?');
+    if (query_start != std::string::npos) {
+        host = host.substr(0, query_start);
+    }
+
+    return host == "s3.amazonaws.com" ||
+           host.find(".s3.amazonaws.com") != std::string::npos ||
+           (host.find(".s3.") != std::string::npos && host.find(".amazonaws.com") != std::string::npos) ||
+           (host.find("s3.") == 0 && host.find(".amazonaws.com") != std::string::npos);
+}
+
+static bool EnsureDirectoryExists(const std::string &directory) {
+    if (directory.empty()) {
+        return false;
+    }
+
+    std::string current;
+    size_t start = 0;
+    if (directory[0] == '/') {
+        current = "/";
+        start = 1;
+    }
+
+    while (start <= directory.size()) {
+        size_t slash = directory.find('/', start);
+        std::string part = directory.substr(start, slash - start);
+        if (!part.empty()) {
+            if (current.size() > 1 && current.back() != '/') {
+                current += "/";
+            }
+            current += part;
+
+            if (mkdir(current.c_str(), 0775) != 0 && errno != EEXIST) {
+                ESP_LOGE(TAG, "Failed to create directory %s", current.c_str());
+                return false;
+            }
+        }
+        if (slash == std::string::npos) {
+            break;
+        }
+        start = slash + 1;
+    }
+
+    return true;
+}
 
 class waveshare_PhotoPainter : public WifiBoard {
   private:
@@ -91,6 +149,102 @@ class waveshare_PhotoPainter : public WifiBoard {
             char *str = Get_TemperatureHumidity();
             if(str) return str;
             else return NULL;
+        });
+
+        mcp_server.AddTool("self.disp.downloadS3Photo", "Download an AWS S3 photo from an S3 URL and save it to a requested SD card directory. Use this only with AWS S3 URLs. The directory can be an absolute /sdcard path or a relative subdirectory under /sdcard.", PropertyList({
+            Property("s3_url", kPropertyTypeString),
+            Property("directory", kPropertyTypeString, "/sdcard/05_user_ai_img"),
+            Property("filename", kPropertyTypeString, "s3_photo.jpg")
+        }), [this](const PropertyList &properties) -> ReturnValue {
+            auto s3_url = properties["s3_url"].value<std::string>();
+            auto directory = properties["directory"].value<std::string>();
+            auto filename = properties["filename"].value<std::string>();
+
+            if (!IsAwsS3Url(s3_url)) {
+                throw std::runtime_error("s3_url must be an AWS S3 URL");
+            }
+            if (directory.empty() || directory.find("..") != std::string::npos) {
+                throw std::runtime_error("directory must be a path under /sdcard");
+            }
+            if (directory[0] != '/') {
+                directory = "/sdcard/" + directory;
+            }
+            if (directory.back() == '/') {
+                directory.pop_back();
+            }
+            if (directory != "/sdcard" && directory.find("/sdcard/") != 0) {
+                throw std::runtime_error("directory must be a path under /sdcard");
+            }
+            if (filename.empty() || filename.find('/') != std::string::npos || filename.find("..") != std::string::npos) {
+                throw std::runtime_error("filename must be a simple file name");
+            }
+
+            if (!EnsureDirectoryExists(directory)) {
+                throw std::runtime_error("Failed to create SD card directory: " + directory);
+            }
+            const std::string path = directory + "/" + filename;
+            if (path.size() >= sizeof(CustomSDPortNode_t::sdcard_name)) {
+                throw std::runtime_error("SD card image path is too long");
+            }
+
+            auto http = Board::GetInstance().GetNetwork()->CreateHttp(3);
+            if (!http->Open("GET", s3_url)) {
+                throw std::runtime_error("Failed to open S3 photo URL");
+            }
+
+            int status_code = http->GetStatusCode();
+            if (status_code != 200) {
+                http->Close();
+                throw std::runtime_error("Unexpected S3 photo status code: " + std::to_string(status_code));
+            }
+
+            FILE *file = fopen(path.c_str(), "wb");
+            if (file == nullptr) {
+                http->Close();
+                throw std::runtime_error("Failed to open SD card file for writing: " + path);
+            }
+
+            char buffer[1024];
+            size_t total_written = 0;
+            while (true) {
+                int ret = http->Read(buffer, sizeof(buffer));
+                if (ret < 0) {
+                    fclose(file);
+                    http->Close();
+                    remove(path.c_str());
+                    throw std::runtime_error("Failed to read S3 photo response");
+                }
+                if (ret == 0) {
+                    break;
+                }
+                size_t written = fwrite(buffer, 1, ret, file);
+                if (written != static_cast<size_t>(ret)) {
+                    fclose(file);
+                    http->Close();
+                    remove(path.c_str());
+                    throw std::runtime_error("Failed to write complete photo to SD card");
+                }
+                total_written += written;
+            }
+
+            fclose(file);
+            http->Close();
+
+            if (total_written == 0) {
+                remove(path.c_str());
+                throw std::runtime_error("S3 photo response was empty");
+            }
+
+            if (SDPort->SDPort_AddImagePath(path.c_str()) == ESP_OK) {
+                sdcard_bmp_Quantity = SDPort->SDPort_GetScanListValue();
+                img_loopCount = sdcard_bmp_Quantity;
+            }
+
+            cJSON *json = cJSON_CreateObject();
+            cJSON_AddStringToObject(json, "path", path.c_str());
+            cJSON_AddNumberToObject(json, "bytes", total_written);
+            cJSON_AddNumberToObject(json, "image_count", sdcard_bmp_Quantity);
+            return json;
         });
     }
 
